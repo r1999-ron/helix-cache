@@ -172,9 +172,8 @@ the samples to their original tiers.
 
 ## Deploy the portfolio demo
 
-The repository includes a production Docker image and a Render Blueprint with
-an encrypted 1 GB persistent disk. The disk preserves uploaded artifacts, the
-registry, and generated DNA archives across restarts and deployments.
+The repository includes a production Docker image and a free Render Blueprint.
+It is designed as a public portfolio demonstration with no hosting charge.
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/r1999-ron/helix-cache)
 
@@ -182,13 +181,14 @@ Deployment steps:
 
 1. Open the button above and connect the GitHub repository.
 2. Review the `helix-cache` Blueprint service.
-3. Approve the Starter instance and 1 GB persistent disk, then deploy.
+3. Confirm the Free instance, then deploy.
 4. Wait for `/health` to pass and open the generated `onrender.com` URL.
 
-The persistent disk requires a paid Render service. This is intentional: free
-instances use an ephemeral filesystem, which would erase uploaded artifacts and
-DNA archives after a restart. If persistence is not needed for a temporary demo,
-remove the `disk` block and change `plan` to `free` in `render.yaml`.
+Free Render instances use an ephemeral filesystem. Uploaded artifacts, generated
+DNA archives, and tier changes can reset after a restart or deployment. When that
+happens, HelixCache automatically recreates its six sample artifacts, so the
+portfolio experiments remain usable. Persistent user data can be added later by
+moving artifacts to object storage and the registry to a database.
 
 The container honors these environment variables:
 
