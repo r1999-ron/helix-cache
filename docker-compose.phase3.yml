@@ -1,0 +1,32 @@
+services:
+  helixcache:
+    build:
+      context: .
+      dockerfile: Dockerfile.phase3
+    ports: ["3000:3000"]
+    environment:
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: helixcache
+      S3_REGION: us-east-1
+      S3_ACCESS_KEY_ID: helixcache
+      S3_SECRET_ACCESS_KEY: helixcache-secret
+      LORA_BASE_MODEL: hf-internal-testing/tiny-random-gpt2
+    volumes: [helix-data:/var/lib/helixcache]
+    depends_on: [redis, minio-init]
+  redis:
+    image: redis:7-alpine
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: helixcache
+      MINIO_ROOT_PASSWORD: helixcache-secret
+    volumes: [minio-data:/data]
+  minio-init:
+    image: minio/mc:latest
+    depends_on: [minio]
+    entrypoint: ["/bin/sh", "-c", "until mc alias set local http://minio:9000 helixcache helixcache-secret; do sleep 1; done; mc mb --ignore-existing local/helixcache"]
+volumes:
+  helix-data:
+  minio-data:

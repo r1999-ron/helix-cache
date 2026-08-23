@@ -5,7 +5,7 @@ const bytes = (value) => value < 1024 ? `${value} B` : `${(value / 1024).toFixed
 
 async function render() {
   const { artifacts, stats } = await api('/api/state');
-  $('#stats').innerHTML = `<div class="card"><strong>${stats.artifacts}</strong><span>managed artifacts</span></div><div class="card"><strong>${stats.tiers.GPU + stats.tiers.RAM}</strong><span>hot tier</span></div><div class="card"><strong>${stats.tiers.DNA}</strong><span>DNA archived</span></div><div class="card"><strong>${stats.estimatedStorageCost}</strong><span>cost units / MB</span></div>`;
+  $('#stats').innerHTML = `<div class="card"><strong>${stats.measurements.wallClockLatencyMs} ms</strong><span>mean measured latency</span></div><div class="card"><strong>${(stats.measurements.cacheHitRate*100).toFixed(1)}%</strong><span>cache-hit rate</span></div><div class="card"><strong>${(stats.measurements.prefetchWasteRate*100).toFixed(1)}%</strong><span>prefetch waste</span></div><div class="card"><strong>$${stats.measurements.costUsd.toFixed(6)}</strong><span>measured transfer cost</span></div>`;
   $('#artifacts').innerHTML = artifacts.map((a) => `<tr><td><strong>${a.id}</strong><br><small>${a.originalName} · ${bytes(a.sizeBytes)}</small></td><td><span class="badge">${a.tier}</span>${a.tier !== a.recommendedTier ? `<br><small>suggest ${a.recommendedTier}</small>` : ''}</td><td>${Math.round(a.predictedDemand * 100)}%</td><td><div class="bar"><i style="width:${a.score * 100}%"></i></div><small>${a.score.toFixed(2)}</small></td><td><div class="button-row"><button data-action="archive" data-id="${a.id}">DNA</button><button data-action="retrieve" data-id="${a.id}">GPU</button><button data-action="download" data-id="${a.id}">Download</button></div></td></tr>`).join('');
   $('#experiment-artifact').innerHTML = artifacts.map((a) => `<option value="${a.id}" ${a.tier === 'DNA' ? 'selected' : ''}>${a.id} (${a.tier})</option>`).join('');
   $('#events').innerHTML = stats.events.slice(0, 10).map((e) => `<div class="event">${e.detail}<small>${e.type} · ${new Date(e.at).toLocaleTimeString()}</small></div>`).join('') || '<p>No activity yet.</p>';
@@ -40,6 +40,33 @@ $('#benchmark').onclick = async () => {
   const data = await api('/api/benchmark', { method: 'POST', body: JSON.stringify({ request: $('#request').value }) });
   const max = Math.max(data.withoutPrefetchMs, data.withPrefetchMs, 1);
   $('#benchmark-result').innerHTML = `<div class="timeline"><label><span>Without prefetch</span><strong>${data.withoutPrefetchMs} ms</strong></label><div class="bar without"><i style="width:${data.withoutPrefetchMs/max*100}%"></i></div><label><span>With prefetch</span><strong>${data.withPrefetchMs} ms</strong></label><div class="bar"><i style="width:${data.withPrefetchMs/max*100}%"></i></div></div><div class="status">Saves ${data.savedMs} ms (${data.improvementPercent}%)</div><small>Dependencies: ${data.dependencies.map((d) => `${d.id} [${d.tier}]`).join(', ') || 'none matched'}</small>`;
+};
+$('#run-inference').onclick = async () => {
+  const button = $('#run-inference');
+  const status = $('#inference-status');
+  const result = $('#inference-result');
+  const prompt = $('#inference-prompt').value.trim();
+  try {
+    if (!prompt) throw new Error('Enter a prompt first.');
+    const maxNewTokens = Math.max(1, Math.min(256, Number($('#inference-tokens').value) || 20));
+    button.disabled = true;
+    button.textContent = 'Loading model…';
+    status.textContent = 'The first run can take a minute while the model loads.';
+    result.hidden = true;
+    const data = await api('/api/inference', { method: 'POST', body: JSON.stringify({ prompt, maxNewTokens }) });
+    $('#inference-output').textContent = data.text;
+    $('#inference-model').textContent = `Model · ${data.baseModel}`;
+    $('#inference-adapter').textContent = `Adapter · ${data.adapter}`;
+    $('#inference-latency').textContent = `Latency · ${(data.wallClockLatencyMs / 1000).toFixed(2)} s`;
+    status.textContent = 'Inference completed successfully.';
+    result.hidden = false;
+    await render();
+  } catch (error) {
+    status.textContent = error.message;
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Run LoRA inference';
+  }
 };
 $('#refresh').onclick = render;
 $('#reset').onclick = async () => { await api('/api/reset', { method: 'POST' }); $('#result').textContent = 'Demo reset: two artifacts restored to DNA.'; await render(); };

@@ -1,6 +1,6 @@
 # HelixCache
 
-**Agentic hierarchical memory for AI using simulated DNA archival storage.**
+**Agentic hierarchical memory for AI with real cache, SSD, object storage, metadata, and LoRA inference backends.**
 
 [**Open the live HelixCache demo →**](https://helix-cache.onrender.com)
 
@@ -11,7 +11,31 @@ HelixCache predicts which AI artifacts will be needed, places them across GPU,
 RAM, SSD, object storage, and DNA tiers, and restores cold artifacts before
 inference reaches them. The project combines storage optimization, a real
 binary-to-DNA codec, error recovery, integrity verification, and predictive
-prefetching in a zero-dependency Node.js application.
+prefetching. Phase 3 adds SQLite metadata, optional Redis, S3-compatible object
+storage, and a genuine PEFT LoRA inference worker.
+
+## Phase 3: real storage and inference
+
+The default process uses SQLite (`data/helixcache.sqlite`), the actual SSD
+filesystem, and an in-process hot cache. `REDIS_URL` replaces the hot cache with
+Redis. The `S3_*` variables make the S3 tier use any SigV4-compatible service;
+without them it uses a local filesystem fallback so the demo stays simple.
+
+`POST /api/inference` launches the Python PEFT runtime. It loads `LORA_ADAPTER`
+when supplied. Otherwise it creates, saves, reloads, and runs a genuine rank-4
+LoRA adapter on the configured small base model. That is an honest runtime smoke
+test: the generated adapter is real but randomly initialized, not trained.
+
+Run Redis, MinIO, SQLite, SSD storage, and LoRA inference together:
+
+```powershell
+docker compose -f docker-compose.phase3.yml up --build
+```
+
+Every move, prefetch, cache lookup, transfer-cost estimate, and inference writes
+a measurement to SQLite. `/api/state` exposes observed wall-clock latency,
+accumulated cost, cache-hit rate, and prefetch waste. A prefetched artifact is
+waste until a later retrieval consumes it.
 
 > HelixCache does not claim that DNA itself accelerates inference. It explores
 > the controller that can hide part of archival retrieval latency by starting
@@ -204,6 +228,14 @@ The container honors these environment variables:
 |---|---|---|
 | `PORT` | `3000` | HTTP listening port; hosting platforms can override it |
 | `DATA_ROOT` | `/var/lib/helixcache` | Persistent registry and tier storage root |
+| `REDIS_URL` | unset | Redis endpoint for GPU/RAM hot objects |
+| `S3_ENDPOINT` / `S3_BUCKET` | unset | S3-compatible store and bucket |
+| `S3_REGION` | `us-east-1` | SigV4 signing region |
+| `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | unset | S3 credentials |
+| `S3_EGRESS_USD_PER_GB` | `0.09` | Cost applied to measured S3 retrieval bytes |
+| `PYTHON_BIN` | `python3` | Python executable for inference |
+| `LORA_BASE_MODEL` | `hf-internal-testing/tiny-random-gpt2` | Small base model |
+| `LORA_ADAPTER` | unset | Local path or Hugging Face PEFT adapter ID |
 
 ## Guided test
 
@@ -237,6 +269,7 @@ dependency resolution, real binary restoration, and the prefetch benchmark.
 | `POST` | `/api/artifacts/:id/dna-experiment` | Inject mutations and report recovery metrics |
 | `POST` | `/api/prefetch` | Predict and restore cold dependencies to SSD |
 | `POST` | `/api/benchmark` | Compare modeled latency with and without prefetch |
+| `POST` | `/api/inference` | Generate with the loaded PEFT LoRA adapter |
 | `POST` | `/api/optimize` | Apply placement recommendations |
 | `POST` | `/api/reset` | Restore the seeded demo state |
 

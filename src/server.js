@@ -36,6 +36,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/reset') { await seed(true); return json(res, 200, { artifacts: cache.list() }); }
     if (req.method === 'POST' && url.pathname === '/api/prefetch') return json(res, 200, await cache.prefetch((await body(req)).request || ''));
     if (req.method === 'POST' && url.pathname === '/api/benchmark') return json(res, 200, cache.benchmark((await body(req)).request || ''));
+    if (req.method === 'POST' && url.pathname === '/api/inference') { const input = await body(req); return json(res, 200, await cache.runInference(input.prompt || '', input.maxNewTokens || 24)); }
     const retrieve = url.pathname.match(/^\/api\/artifacts\/([^/]+)\/retrieve$/);
     if (req.method === 'POST' && retrieve) return json(res, 200, await cache.retrieve(decodeURIComponent(retrieve[1]), (await body(req)).targetTier || 'GPU'));
     const archive = url.pathname.match(/^\/api\/artifacts\/([^/]+)\/archive$/);
@@ -57,7 +58,7 @@ server.listen(port, () => console.log(`HelixCache is running at http://localhost
 
 const shutdown = (signal) => {
   console.log(`${signal} received; closing HelixCache cleanly.`);
-  server.close(() => process.exit(0));
+  server.close(() => { cache.close(); process.exit(0); });
   setTimeout(() => process.exit(1), 10000).unref();
 };
 process.on('SIGTERM', () => shutdown('SIGTERM'));

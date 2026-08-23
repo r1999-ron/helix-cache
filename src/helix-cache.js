@@ -1,6 +1,9 @@
-import { mkdir, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { encode, decode, toFasta, fromFasta, sha256, corrupt, analyze } from './dna-codec.js';
+import { MetadataStore } from './database.js';
+import { TierStorage } from './storage.js';
+import { LoraRuntime } from './inference-runtime.js';
 
 export const TIERS = ['GPU', 'RAM', 'SSD', 'S3', 'DNA'];
 const latency = { GPU: 1, RAM: 5, SSD: 30, S3: 250, DNA: 2500 };
@@ -10,30 +13,39 @@ export class HelixCache {
   constructor(root = path.resolve('data')) {
     this.root = root;
     this.registryFile = path.join(root, 'registry.json');
-    this.events = [];
+    this.dbFile = path.join(root, 'helixcache.sqlite');
+    this.storage = new TierStorage(root);
+    this.inference = new LoraRuntime();
   }
 
   async init() {
-    await Promise.all(TIERS.map((tier) => mkdir(path.join(this.root, tier.toLowerCase()), { recursive: true })));
+    await mkdir(this.root, { recursive: true });
+    await this.storage.init();
+    this.metadata = new MetadataStore(this.dbFile);
+    this.registry = this.metadata.artifacts();
+    // One-time migration from the Phase 2 JSON registry.
+    if (!Object.keys(this.registry).length) {
     try {
-      this.registry = JSON.parse(await readFile(this.registryFile, 'utf8'));
+      const legacy = JSON.parse(await readFile(this.registryFile, 'utf8'));
+      this.registry = legacy;
       for (const artifact of Object.values(this.registry)) {
         artifact.originalName ||= `${artifact.id}.bin`;
         artifact.mimeType ||= 'application/octet-stream';
+        this.metadata.putArtifact(artifact);
       }
     }
-    catch { this.registry = {}; await this.save(); }
+    catch { this.registry = {}; }
+    }
     return this;
   }
 
-  async save() { await writeFile(this.registryFile, JSON.stringify(this.registry, null, 2)); }
+  async save(artifact) { if (artifact) this.metadata.putArtifact(artifact); else for (const item of Object.values(this.registry)) this.metadata.putArtifact(item); }
   async clear() {
-    for (const artifact of this.list()) await rm(this.fileFor(artifact), { force: true });
+    for (const artifact of this.list()) await this.storage.delete(artifact.tier, artifact.id).catch(() => {});
     this.registry = {};
-    this.events = [];
-    await this.save();
+    this.metadata.deleteArtifacts();
   }
-  emit(type, detail) { this.events.unshift({ at: new Date().toISOString(), type, detail }); this.events = this.events.slice(0, 100); }
+  emit(type, detail) { this.metadata.event(type, detail); }
   list() { return Object.values(this.registry).sort((a, b) => b.accessCount - a.accessCount); }
 
   fileFor(artifact, tier = artifact.tier) {
@@ -46,9 +58,9 @@ export class HelixCache {
     const buffer = contentBase64 ? Buffer.from(contentBase64, 'base64') : content ? Buffer.from(content) : Buffer.alloc(sizeBytes || 1024, id.charCodeAt(0) || 1);
     const artifact = { id, originalName: originalName || `${id}.bin`, mimeType: mimeType || 'application/octet-stream', tier: tier || 'SSD', sizeBytes: buffer.length, accessCount, lastAccess: new Date(Date.now() - lastAccessDays * 86400000).toISOString(), businessPriority, predictedDemand, checksum: sha256(buffer), retrievals: 0 };
     this.registry[id] = artifact;
-    if (artifact.tier === 'DNA') await writeFile(this.fileFor(artifact), toFasta(encode(buffer)));
-    else await writeFile(this.fileFor(artifact), buffer);
-    await this.save(); this.emit('registered', `${id} → ${artifact.tier}`);
+    const stored = artifact.tier === 'DNA' ? Buffer.from(toFasta(encode(buffer))) : buffer;
+    await this.storage.put(artifact.tier, id, stored);
+    await this.save(artifact); this.emit('registered', `${id} → ${artifact.tier}`);
     return artifact;
   }
 
@@ -74,14 +86,18 @@ export class HelixCache {
     if (!artifact) throw new Error(`Unknown artifact: ${id}`);
     if (!TIERS.includes(targetTier)) throw new Error(`Unknown tier: ${targetTier}`);
     if (artifact.tier === targetTier) return artifact;
-    const oldFile = this.fileFor(artifact);
-    const raw = artifact.tier === 'DNA' ? decode(fromFasta(await readFile(oldFile, 'utf8'))) : await readFile(oldFile);
-    const targetFile = this.fileFor(artifact, targetTier);
-    if (targetTier === 'DNA') await writeFile(targetFile, toFasta(encode(raw)));
-    else await writeFile(targetFile, raw);
-    await rm(oldFile);
+    const started = performance.now();
+    const stored = await this.storage.get(artifact.tier, id);
+    if (!stored) throw new Error(`Hot-cache object is missing: ${id}`);
+    const raw = artifact.tier === 'DNA' ? decode(fromFasta(stored.toString('utf8'))) : stored;
+    const target = targetTier === 'DNA' ? Buffer.from(toFasta(encode(raw))) : raw;
+    await this.storage.put(targetTier, id, target);
+    await this.storage.delete(artifact.tier, id);
     const previous = artifact.tier; artifact.tier = targetTier;
-    await this.save(); this.emit('moved', `${id}: ${previous} → ${targetTier}`);
+    await this.save(artifact); this.emit('moved', `${id}: ${previous} → ${targetTier}`);
+    const elapsed = performance.now() - started;
+    const costUsd = previous === 'S3' ? raw.length / 1073741824 * Number(process.env.S3_EGRESS_USD_PER_GB || 0.09) : 0;
+    this.metadata.measure({ operation: 'move', artifactId: id, latencyMs: elapsed, costUsd, cacheHit: ['GPU', 'RAM'].includes(previous), detail: { source: previous, target: targetTier, bytes: raw.length } });
     return artifact;
   }
 
@@ -99,17 +115,23 @@ export class HelixCache {
     if (!artifact) throw new Error(`Unknown artifact: ${id}`);
     const source = artifact.tier;
     const started = Date.now();
-    await this.move(id, targetTier);
+    if (source === targetTier && ['GPU', 'RAM'].includes(source)) {
+      const cached = await this.storage.get(source, id);
+      const hit = Boolean(cached && sha256(cached) === artifact.checksum);
+      this.metadata.measure({ operation: 'cache-lookup', artifactId: id, latencyMs: Date.now() - started, cacheHit: hit, detail: { tier: source } });
+      if (!hit) throw new Error(`Hot-cache object is missing or corrupt: ${id}`);
+    } else await this.move(id, targetTier);
     artifact.lastAccess = new Date().toISOString(); artifact.accessCount++; artifact.retrievals++;
-    await this.save();
-    const result = { id, source, target: targetTier, simulatedLatencyMs: latency[source], elapsedMs: Date.now() - started, checksumVerified: true };
+    await this.save(artifact); this.metadata.consumePrefetch(id);
+    const result = { id, source, target: targetTier, elapsedMs: Date.now() - started, checksumVerified: true, sourceBackend: this.storage.backend(source), targetBackend: this.storage.backend(targetTier) };
     this.emit('retrieved', `${id}: ${source} → ${targetTier}`); return result;
   }
 
   async dnaExperiment(id, mutations = 12) {
     const artifact = this.registry[id];
     if (!artifact) throw new Error(`Unknown artifact: ${id}`);
-    const raw = artifact.tier === 'DNA' ? decode(fromFasta(await readFile(this.fileFor(artifact), 'utf8'))) : await readFile(this.fileFor(artifact));
+    const stored = await this.storage.get(artifact.tier, id);
+    const raw = artifact.tier === 'DNA' ? decode(fromFasta(stored.toString('utf8'))) : stored;
     const archive = encode(raw);
     const damaged = corrupt(archive, Math.max(0, Math.min(1000, Number(mutations) || 0)));
     const started = performance.now();
@@ -124,7 +146,9 @@ export class HelixCache {
   async readArtifact(id) {
     const artifact = this.registry[id];
     if (!artifact) throw new Error(`Unknown artifact: ${id}`);
-    const data = artifact.tier === 'DNA' ? decode(fromFasta(await readFile(this.fileFor(artifact), 'utf8'))) : await readFile(this.fileFor(artifact));
+    const stored = await this.storage.get(artifact.tier, id);
+    if (!stored) throw new Error(`Hot-cache object is missing: ${id}`);
+    const data = artifact.tier === 'DNA' ? decode(fromFasta(stored.toString('utf8'))) : stored;
     if (sha256(data) !== artifact.checksum) throw new Error('Artifact checksum verification failed');
     return { artifact, data };
   }
@@ -137,6 +161,7 @@ export class HelixCache {
   async prefetch(request) {
     const candidates = this.resolveRequest(request).slice(0, 4);
     const results = await Promise.all(candidates.filter((item) => ['S3', 'DNA'].includes(item.tier)).map((item) => this.retrieve(item.id, 'SSD')));
+    for (const result of results) this.metadata.measure({ operation: 'prefetch', artifactId: result.id, latencyMs: result.elapsedMs, prefetched: true, detail: { request } });
     this.emit('prefetch', `${results.length} artifacts for “${request}”`);
     return { request, predicted: candidates.map((item) => item.id), prefetched: results };
   }
@@ -155,6 +180,15 @@ export class HelixCache {
   stats() {
     const artifacts = this.list();
     const tiers = Object.fromEntries(TIERS.map((tier) => [tier, artifacts.filter((item) => item.tier === tier).length]));
-    return { artifacts: artifacts.length, tiers, estimatedStorageCost: Number(artifacts.reduce((sum, item) => sum + cost[item.tier] * item.sizeBytes / 1048576, 0).toFixed(3)), events: this.events };
+    return { artifacts: artifacts.length, tiers, estimatedStorageCost: Number(artifacts.reduce((sum, item) => sum + cost[item.tier] * item.sizeBytes / 1048576, 0).toFixed(3)), events: this.metadata.events(), measurements: this.metadata.metrics(), backends: Object.fromEntries(TIERS.map((tier) => [tier, this.storage.backend(tier)])) };
   }
+
+  async runInference(prompt, maxNewTokens = 24) {
+    const result = await this.inference.infer(prompt, maxNewTokens);
+    this.metadata.measure({ operation: 'inference', latencyMs: result.wallClockLatencyMs, detail: { baseModel: result.baseModel, adapter: result.adapter } });
+    this.emit('inference', `${result.adapter} · ${result.wallClockLatencyMs} ms`);
+    return result;
+  }
+
+  close() { this.metadata?.close(); }
 }
