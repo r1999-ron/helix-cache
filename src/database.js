@@ -14,12 +14,16 @@ export class MetadataStore {
         detail TEXT
       );
       CREATE INDEX IF NOT EXISTS measurements_operation ON measurements(operation, at);
+      CREATE TABLE IF NOT EXISTS access_history (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT, artifact_id TEXT NOT NULL, at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS access_history_artifact ON access_history(artifact_id, at);
     `);
     this.putArtifactStmt = this.db.prepare('INSERT INTO artifacts(id,data) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data');
   }
   artifacts() { return Object.fromEntries(this.db.prepare('SELECT id,data FROM artifacts').all().map(({ id, data }) => [id, JSON.parse(data)])); }
   putArtifact(value) { this.putArtifactStmt.run(value.id, JSON.stringify(value)); }
-  deleteArtifacts() { this.db.exec('DELETE FROM artifacts; DELETE FROM events; DELETE FROM measurements;'); }
+  deleteArtifacts() { this.db.exec('DELETE FROM artifacts; DELETE FROM events; DELETE FROM measurements; DELETE FROM access_history;'); }
   event(type, detail) { this.db.prepare('INSERT INTO events(at,type,detail) VALUES(?,?,?)').run(new Date().toISOString(), type, detail); }
   events(limit = 100) { return this.db.prepare('SELECT at,type,detail FROM events ORDER BY seq DESC LIMIT ?').all(limit); }
   measure({ operation, artifactId = null, latencyMs, costUsd = 0, cacheHit = null, prefetched = false, consumed = false, detail = null }) {
@@ -27,6 +31,8 @@ export class MetadataStore {
       .run(new Date().toISOString(), operation, artifactId, latencyMs, costUsd, cacheHit === null ? null : Number(cacheHit), Number(prefetched), Number(consumed), detail && JSON.stringify(detail));
   }
   consumePrefetch(id) { this.db.prepare("UPDATE measurements SET consumed=1 WHERE seq=(SELECT seq FROM measurements WHERE artifact_id=? AND prefetched=1 AND consumed=0 ORDER BY seq DESC LIMIT 1)").run(id); }
+  recordAccess(id, at = new Date().toISOString()) { this.db.prepare('INSERT INTO access_history(artifact_id,at) VALUES(?,?)').run(id, at); }
+  accessHistory(id, days = 90) { return this.db.prepare("SELECT at FROM access_history WHERE artifact_id=? AND at>=datetime('now', ?) ORDER BY at").all(id, `-${days} days`).map((row) => row.at); }
   metrics() {
     const row = this.db.prepare(`SELECT COUNT(*) operations, COALESCE(AVG(latency_ms),0) avg_latency_ms,
       COALESCE(SUM(cost_usd),0) cost_usd, COALESCE(SUM(CASE WHEN cache_hit=1 THEN 1 ELSE 0 END),0) hits,

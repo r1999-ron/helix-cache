@@ -34,7 +34,11 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/artifacts') return json(res, 201, await cache.register(await body(req)));
     if (req.method === 'POST' && url.pathname === '/api/optimize') return json(res, 200, { changes: await cache.optimize() });
     if (req.method === 'POST' && url.pathname === '/api/reset') { await seed(true); return json(res, 200, { artifacts: cache.list() }); }
-    if (req.method === 'POST' && url.pathname === '/api/prefetch') return json(res, 200, await cache.prefetch((await body(req)).request || ''));
+    if (req.method === 'POST' && url.pathname === '/api/prefetch') { const input = await body(req); return json(res, 200, await cache.prefetch(input.request || '', { jobId: input.jobId })); }
+    if (req.method === 'POST' && url.pathname === '/api/plan') { const input = await body(req); return json(res, 200, cache.planRequest(input.request || '', input.limit || 4)); }
+    if (req.method === 'GET' && url.pathname === '/api/policies') return json(res, 200, { policies: cache.comparePolicies() });
+    const cancelPrefetch = url.pathname.match(/^\/api\/prefetch\/([^/]+)\/cancel$/);
+    if (req.method === 'POST' && cancelPrefetch) return json(res, 200, { cancelled: cache.cancelPrefetch(decodeURIComponent(cancelPrefetch[1])) });
     if (req.method === 'POST' && url.pathname === '/api/benchmark') return json(res, 200, cache.benchmark((await body(req)).request || ''));
     if (req.method === 'POST' && url.pathname === '/api/inference') { const input = await body(req); return json(res, 200, await cache.runInference(input.prompt || '', input.maxNewTokens || 24)); }
     const retrieve = url.pathname.match(/^\/api\/artifacts\/([^/]+)\/retrieve$/);

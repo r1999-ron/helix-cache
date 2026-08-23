@@ -239,14 +239,25 @@ The container honors these environment variables:
 
 ## Guided test
 
-1. Click **Reset demo** and confirm that two artifacts are in DNA.
-2. Upload a small file in **Real file journey**.
-3. Find its registry row and click **DNA**.
-4. Run the **DNA damage lab** with 12 mutations and confirm recovery succeeds.
-5. Click **GPU** to restore the artifact, then **Download**.
-6. Compare the original and downloaded SHA-256 hashes.
-7. Reset again, run **Compare speed**, click **Prefetch now**, and compare speed
-   a second time.
+The full Phase 4 flow can be tested from the dashboard without API commands:
+
+1. Click **Reset demo** to restore the six samples to their original tiers.
+2. In **Intelligent prediction lab**, keep the example request and click
+   **Build semantic plan**. Confirm that the embedding planner returns ranked
+   dependencies with confidence, order, and prefetch actions.
+3. Click **Run prefetch plan**. The two cold dependencies should be marked
+   **prefetched** and move from DNA to SSD in the artifact registry. A warm
+   dependency remains **planned** because it can be used in place.
+4. Click **Compare policies**. Confirm that rule-based, learned, and hybrid
+   policies show different proposed tiers and access-history demand forecasts.
+5. To exercise cancellation, reset the demo, click **Run prefetch plan**, then
+   immediately click **Cancel plan**. Local samples are intentionally tiny, so
+   the plan may finish before the click; the automated suite tests the
+   deterministic cancellation path.
+6. In **Prefetch benchmark**, click **Compare speed** and confirm the modeled
+   prefetch timeline is shorter than sequential cold retrieval.
+7. Optionally upload a small file in **Real file journey**, archive it with
+   **DNA**, run the **DNA damage lab**, restore it with **GPU**, and download it.
 
 Run automated verification:
 
@@ -254,8 +265,9 @@ Run automated verification:
 npm.cmd test
 ```
 
-The five tests cover arbitrary byte round-trips, substitution recovery,
-dependency resolution, real binary restoration, and the prefetch benchmark.
+The 12 tests cover DNA recovery and integrity, semantic multi-artifact planning,
+access-history forecasting, placement-policy comparison, prefetch cancellation,
+persistence, telemetry, and real binary restoration.
 
 ## API
 
@@ -268,6 +280,9 @@ dependency resolution, real binary restoration, and the prefetch benchmark.
 | `GET` | `/api/artifacts/:id/download` | Download the verified original bytes |
 | `POST` | `/api/artifacts/:id/dna-experiment` | Inject mutations and report recovery metrics |
 | `POST` | `/api/prefetch` | Predict and restore cold dependencies to SSD |
+| `POST` | `/api/plan` | Build a ranked semantic multi-artifact plan |
+| `POST` | `/api/prefetch/:jobId/cancel` | Cancel remaining prefetch transfers |
+| `GET` | `/api/policies` | Compare rule-based, learned, and hybrid placement |
 | `POST` | `/api/benchmark` | Compare modeled latency with and without prefetch |
 | `POST` | `/api/inference` | Generate with the loaded PEFT LoRA adapter |
 | `POST` | `/api/optimize` | Apply placement recommendations |
@@ -277,6 +292,8 @@ dependency resolution, real binary restoration, and the prefetch benchmark.
 
 ```text
 src/
+  intelligence.js    Semantic embeddings, planning, forecasting policy scores
+  database.js        SQLite metadata, access history, events, and telemetry
   dna-codec.js       DNA conversion, FASTA, corruption, recovery, analysis
   helix-cache.js     Registry, scoring, retrieval, prefetch, benchmark
   server.js          HTTP server and API
@@ -297,7 +314,7 @@ data/                 Generated runtime tiers and registry (Git-ignored)
 | Substitution/indel repair and missing-strand recovery | Production retrieval latency and cost |
 | SHA-256 verification | Model inference |
 | Real file upload and download | Multi-node orchestration |
-| Placement and prefetch decisions | Semantic LLM routing |
+| Local semantic embedding plans | Hosted LLM routing |
 
 ## Limitations
 
@@ -305,12 +322,12 @@ data/                 Generated runtime tiers and registry (Git-ignored)
   production sequencing pipelines would use alignment and probabilistic decoding.
 - Reed–Solomon recovery is limited to the configured parity-shard count and a
   maximum of 255 data shards per archive.
-- Dependency prediction currently uses keyword overlap rather than semantic
-  understanding.
+- The bundled semantic embedder is intentionally small and deterministic; it
+  is not a substitute for a domain-trained embedding model on large registries.
 - Storage tiers are folders, not CUDA memory, Redis, NVMe, or a cloud provider.
 - Benchmark numbers are modeled constants and must not be presented as measured
   physical-DNA performance.
-- The JSON registry is intended for a local experiment, not concurrent use.
+- The local SQLite registry is intended for a single controller, not concurrent writers.
 
 ## Roadmap
 
@@ -328,12 +345,22 @@ data/                 Generated runtime tiers and registry (Git-ignored)
 - Move registry and event data into SQLite or PostgreSQL.
 - Measure wall-clock latency, cost, cache-hit rate, and prefetch waste.
 
-### Phase 4 — intelligent prediction
+### Phase 4 — intelligent prediction (implemented)
 
-- Replace keyword matching with embeddings or an LLM planner.
-- Forecast demand from access history.
-- Support multi-artifact plans and prefetch cancellation.
-- Compare rule-based, learned, and hybrid placement policies.
+- [x] Replace keyword matching with local embeddings.
+- Local semantic embeddings replace literal keyword matching. Artifact descriptions and tags participate in ranking without sending registry data to an external service.
+- Exponentially weighted access history forecasts demand over a configurable horizon.
+- Ranked multi-artifact plans identify both dependencies and their prefetch actions. Prefetch jobs accept a caller-provided ID and can be cancelled between transfers.
+- Rule-based, learned, and hybrid placement policies can be compared side-by-side before applying placement changes.
+
+Phase 4 API additions:
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/plan` | Return a ranked semantic multi-artifact plan |
+| `POST` | `/api/prefetch` | Execute a plan; accepts `request` and optional `jobId` |
+| `POST` | `/api/prefetch/:jobId/cancel` | Cancel remaining transfers in a prefetch job |
+| `GET` | `/api/policies` | Compare rule-based, learned, and hybrid placements |
 
 ## Portfolio description
 

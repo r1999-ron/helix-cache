@@ -63,3 +63,47 @@ test('SQLite persists registry, events, and measured cache/prefetch telemetry', 
     assert.ok(cache.stats().events.length >= 2);
   } finally { cache?.close(); await rm(root, { recursive: true }); }
 });
+
+test('embedding planner resolves semantic aliases and builds multi-artifact plans', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'helixcache-'));
+  let cache;
+  try {
+    cache = await new HelixCache(root).init();
+    await cache.register({ id: 'maps-address-v2', content: 'adapter', description: 'postal geocoding model', tier: 'DNA' });
+    await cache.register({ id: 'evaluation-dataset-2024', content: 'data', tags: ['benchmark', 'addresses'], tier: 'S3' });
+    const plan = cache.planRequest('benchmark location lookup quality');
+    assert.equal(plan.strategy, 'local-embedding');
+    assert.ok(plan.artifacts.some((item) => item.id === 'maps-address-v2'));
+    assert.ok(plan.artifacts.some((item) => item.id === 'evaluation-dataset-2024'));
+    assert.ok(plan.artifacts.every((item) => item.confidence > 0 && item.order > 0));
+  } finally { cache?.close(); await rm(root, { recursive: true }); }
+});
+
+test('demand forecasting learns from access history and policies can be compared', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'helixcache-'));
+  let cache;
+  try {
+    cache = await new HelixCache(root).init();
+    await cache.register({ id: 'active-model', content: 'adapter', predictedDemand: .01, tier: 'DNA' });
+    for (let index = 0; index < 8; index++) cache.metadata.recordAccess('active-model', new Date(Date.now() - index * 3600000).toISOString());
+    assert.ok(cache.forecastDemand(cache.registry['active-model']) > .5);
+    const comparison = cache.comparePolicies();
+    assert.deepEqual(comparison.map((item) => item.policy), ['rule-based', 'learned', 'hybrid']);
+    assert.ok(comparison.every((item) => item.placements[0].forecast > .5));
+  } finally { cache?.close(); await rm(root, { recursive: true }); }
+});
+
+test('prefetch cancellation stops a multi-artifact plan between transfers', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'helixcache-'));
+  let cache;
+  try {
+    cache = await new HelixCache(root).init();
+    await cache.register({ id: 'legal-model', content: 'adapter', description: 'law contract compliance', tier: 'DNA' });
+    const controller = new AbortController();
+    controller.abort();
+    const result = await cache.prefetch('contract law model', { jobId: 'cancelled-job', signal: controller.signal });
+    assert.equal(result.cancelled, true);
+    assert.equal(result.prefetched.length, 0);
+    assert.equal(cache.registry['legal-model'].tier, 'DNA');
+  } finally { cache?.close(); await rm(root, { recursive: true }); }
+});

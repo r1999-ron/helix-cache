@@ -4,6 +4,7 @@ import { encode, decode, toFasta, fromFasta, sha256, corrupt, analyze } from './
 import { MetadataStore } from './database.js';
 import { TierStorage } from './storage.js';
 import { LoraRuntime } from './inference-runtime.js';
+import { semanticPlan, placementScore, tierForScore } from './intelligence.js';
 
 export const TIERS = ['GPU', 'RAM', 'SSD', 'S3', 'DNA'];
 const latency = { GPU: 1, RAM: 5, SSD: 30, S3: 250, DNA: 2500 };
@@ -16,6 +17,7 @@ export class HelixCache {
     this.dbFile = path.join(root, 'helixcache.sqlite');
     this.storage = new TierStorage(root);
     this.inference = new LoraRuntime();
+    this.prefetchJobs = new Map();
   }
 
   async init() {
@@ -53,10 +55,10 @@ export class HelixCache {
     return path.join(this.root, tier.toLowerCase(), artifact.id + extension);
   }
 
-  async register({ id, content, contentBase64, originalName, mimeType, sizeBytes, accessCount = 0, lastAccessDays = 0, businessPriority = 0.5, predictedDemand = 0.2, tier }) {
+  async register({ id, content, contentBase64, originalName, mimeType, description = '', tags = [], sizeBytes, accessCount = 0, lastAccessDays = 0, businessPriority = 0.5, predictedDemand = 0.2, tier }) {
     if (!/^[a-z0-9][a-z0-9._-]*$/i.test(id)) throw new Error('Artifact id contains unsupported characters');
     const buffer = contentBase64 ? Buffer.from(contentBase64, 'base64') : content ? Buffer.from(content) : Buffer.alloc(sizeBytes || 1024, id.charCodeAt(0) || 1);
-    const artifact = { id, originalName: originalName || `${id}.bin`, mimeType: mimeType || 'application/octet-stream', tier: tier || 'SSD', sizeBytes: buffer.length, accessCount, lastAccess: new Date(Date.now() - lastAccessDays * 86400000).toISOString(), businessPriority, predictedDemand, checksum: sha256(buffer), retrievals: 0 };
+    const artifact = { id, originalName: originalName || `${id}.bin`, mimeType: mimeType || 'application/octet-stream', description, tags, tier: tier || 'SSD', sizeBytes: buffer.length, accessCount, lastAccess: new Date(Date.now() - lastAccessDays * 86400000).toISOString(), businessPriority, predictedDemand, checksum: sha256(buffer), retrievals: 0 };
     this.registry[id] = artifact;
     const stored = artifact.tier === 'DNA' ? Buffer.from(toFasta(encode(buffer))) : buffer;
     await this.storage.put(artifact.tier, id, stored);
@@ -79,6 +81,31 @@ export class HelixCache {
     if (score >= 0.38) return 'SSD';
     if (score >= 0.2) return 'S3';
     return 'DNA';
+  }
+
+  forecastDemand(artifact, horizonDays = 7) {
+    const history = this.metadata.accessHistory(artifact.id, 90).map((at) => new Date(at).getTime());
+    if (!history.length) return Number(artifact.predictedDemand || 0);
+    const now = Date.now();
+    let weighted = 0, weight = 0;
+    for (let week = 0; week < 12; week++) {
+      const end = now - week * 7 * 86400000, start = end - 7 * 86400000;
+      const decay = Math.exp(-week / 4);
+      weighted += history.filter((at) => at >= start && at < end).length * decay; weight += decay;
+    }
+    const weeklyRate = weighted / weight;
+    return Number(Math.min(1, (1 - Math.exp(-weeklyRate * horizonDays / 7))).toFixed(4));
+  }
+
+  comparePolicies() {
+    const names = ['rule-based', 'learned', 'hybrid'];
+    return names.map((policy) => {
+      const placements = this.list().map((artifact) => {
+        const forecast = this.forecastDemand(artifact), score = placementScore(artifact, forecast, policy);
+        return { id: artifact.id, forecast, score: Number(score.toFixed(4)), tier: tierForScore(score), currentTier: artifact.tier };
+      });
+      return { policy, changes: placements.filter((item) => item.tier !== item.currentTier).length, placements };
+    });
   }
 
   async move(id, targetTier) {
@@ -122,6 +149,7 @@ export class HelixCache {
       if (!hit) throw new Error(`Hot-cache object is missing or corrupt: ${id}`);
     } else await this.move(id, targetTier);
     artifact.lastAccess = new Date().toISOString(); artifact.accessCount++; artifact.retrievals++;
+    this.metadata.recordAccess(id, artifact.lastAccess);
     await this.save(artifact); this.metadata.consumePrefetch(id);
     const result = { id, source, target: targetTier, elapsedMs: Date.now() - started, checksumVerified: true, sourceBackend: this.storage.backend(source), targetBackend: this.storage.backend(targetTier) };
     this.emit('retrieved', `${id}: ${source} → ${targetTier}`); return result;
@@ -154,17 +182,31 @@ export class HelixCache {
   }
 
   resolveRequest(request) {
-    const words = request.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length > 2);
-    return this.list().map((artifact) => ({ artifact, match: words.filter((word) => artifact.id.toLowerCase().includes(word)).length })).filter((item) => item.match).sort((a, b) => b.match - a.match || b.artifact.predictedDemand - a.artifact.predictedDemand).map((item) => item.artifact);
+    const plan = this.planRequest(request);
+    return plan.artifacts.map((item) => this.registry[item.id]);
   }
 
-  async prefetch(request) {
-    const candidates = this.resolveRequest(request).slice(0, 4);
-    const results = await Promise.all(candidates.filter((item) => ['S3', 'DNA'].includes(item.tier)).map((item) => this.retrieve(item.id, 'SSD')));
+  planRequest(request, limit = 4) { return semanticPlan(request, this.list(), limit); }
+
+  async prefetch(request, { jobId = globalThis.crypto.randomUUID(), signal } = {}) {
+    const controller = new AbortController();
+    if (signal?.aborted) controller.abort();
+    else if (signal) signal.addEventListener('abort', () => controller.abort(), { once: true });
+    this.prefetchJobs.set(jobId, controller);
+    const plan = this.planRequest(request), candidates = plan.artifacts.map((item) => this.registry[item.id]);
+    const results = [];
+    for (const item of candidates.filter((candidate) => ['S3', 'DNA'].includes(candidate.tier))) {
+      if (controller.signal.aborted) break;
+      results.push(await this.retrieve(item.id, 'SSD'));
+    }
     for (const result of results) this.metadata.measure({ operation: 'prefetch', artifactId: result.id, latencyMs: result.elapsedMs, prefetched: true, detail: { request } });
-    this.emit('prefetch', `${results.length} artifacts for “${request}”`);
-    return { request, predicted: candidates.map((item) => item.id), prefetched: results };
+    const cancelled = controller.signal.aborted;
+    this.prefetchJobs.delete(jobId);
+    this.emit(cancelled ? 'prefetch-cancelled' : 'prefetch', `${results.length} artifacts for “${request}”`);
+    return { jobId, request, plan, predicted: candidates.map((item) => item.id), prefetched: results, cancelled };
   }
+
+  cancelPrefetch(jobId) { const job = this.prefetchJobs.get(jobId); if (!job) return false; job.abort(); return true; }
 
   benchmark(request) {
     const predicted = this.resolveRequest(request).slice(0, 4);

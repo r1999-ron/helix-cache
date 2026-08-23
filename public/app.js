@@ -2,6 +2,12 @@ const $ = (selector) => document.querySelector(selector);
 const api = async (path, options = {}) => { const response = await fetch(path, { headers: { 'content-type': 'application/json' }, ...options }); const data = await response.json(); if (!response.ok) throw new Error(data.error); return data; };
 const safeId = (name) => name.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
 const bytes = (value) => value < 1024 ? `${value} B` : `${(value / 1024).toFixed(1)} KB`;
+let activePrefetchJob = null;
+
+const renderPlan = (plan, prefetched = []) => {
+  const moved = new Set(prefetched.map((item) => item.id));
+  $('#planner-result').innerHTML = plan.artifacts.length ? `<div class="table-wrap"><table><thead><tr><th>Order</th><th>Artifact</th><th>Confidence</th><th>Action</th><th>Result</th></tr></thead><tbody>${plan.artifacts.map((item) => `<tr><td>${item.order}</td><td><strong>${item.id}</strong></td><td>${(item.confidence * 100).toFixed(1)}%</td><td>${item.action}</td><td>${moved.has(item.id) ? '<span class="badge">prefetched</span>' : 'planned'}</td></tr>`).join('')}</tbody></table></div>` : '<p>No semantic matches. Try mentioning location, evaluation, finance, legal, model, or dataset concepts.</p>';
+};
 
 async function render() {
   const { artifacts, stats } = await api('/api/state');
@@ -40,6 +46,40 @@ $('#benchmark').onclick = async () => {
   const data = await api('/api/benchmark', { method: 'POST', body: JSON.stringify({ request: $('#request').value }) });
   const max = Math.max(data.withoutPrefetchMs, data.withPrefetchMs, 1);
   $('#benchmark-result').innerHTML = `<div class="timeline"><label><span>Without prefetch</span><strong>${data.withoutPrefetchMs} ms</strong></label><div class="bar without"><i style="width:${data.withoutPrefetchMs/max*100}%"></i></div><label><span>With prefetch</span><strong>${data.withPrefetchMs} ms</strong></label><div class="bar"><i style="width:${data.withPrefetchMs/max*100}%"></i></div></div><div class="status">Saves ${data.savedMs} ms (${data.improvementPercent}%)</div><small>Dependencies: ${data.dependencies.map((d) => `${d.id} [${d.tier}]`).join(', ') || 'none matched'}</small>`;
+};
+$('#build-plan').onclick = async () => {
+  try {
+    $('#planner-status').textContent = 'Building a semantic dependency plan…';
+    const plan = await api('/api/plan', { method: 'POST', body: JSON.stringify({ request: $('#planner-request').value }) });
+    renderPlan(plan);
+    $('#planner-status').textContent = `${plan.strategy}: ${plan.artifacts.length} dependencies predicted.`;
+  } catch (error) { $('#planner-status').textContent = error.message; }
+};
+$('#run-plan').onclick = async () => {
+  const button = $('#run-plan');
+  try {
+    activePrefetchJob = globalThis.crypto.randomUUID();
+    button.disabled = true; $('#cancel-plan').disabled = false;
+    $('#planner-status').textContent = `Running prefetch job ${activePrefetchJob.slice(0, 8)}…`;
+    const data = await api('/api/prefetch', { method: 'POST', body: JSON.stringify({ request: $('#planner-request').value, jobId: activePrefetchJob }) });
+    renderPlan(data.plan, data.prefetched);
+    $('#planner-status').textContent = data.cancelled ? `Cancelled after ${data.prefetched.length} transfers.` : `Plan complete: ${data.prefetched.length} cold artifacts moved to SSD.`;
+    await render();
+  } catch (error) { $('#planner-status').textContent = error.message; }
+  finally { activePrefetchJob = null; button.disabled = false; $('#cancel-plan').disabled = true; }
+};
+$('#cancel-plan').onclick = async () => {
+  if (!activePrefetchJob) return;
+  const data = await api(`/api/prefetch/${encodeURIComponent(activePrefetchJob)}/cancel`, { method: 'POST', body: '{}' });
+  $('#planner-status').textContent = data.cancelled ? 'Cancellation requested; the current transfer will finish.' : 'The plan already finished.';
+};
+$('#compare-policies').onclick = async () => {
+  try {
+    $('#planner-status').textContent = 'Forecasting demand and comparing policies…';
+    const { policies } = await api('/api/policies');
+    $('#policy-result').innerHTML = `<div class="table-wrap"><table><thead><tr><th>Policy</th><th>Placement changes</th><th>Proposed tiers</th></tr></thead><tbody>${policies.map((policy) => `<tr><td><strong>${policy.policy}</strong></td><td>${policy.changes}</td><td>${policy.placements.map((item) => `${item.id}: ${item.currentTier} → ${item.tier} (${Math.round(item.forecast * 100)}%)`).join('<br>')}</td></tr>`).join('')}</tbody></table></div>`;
+    $('#planner-status').textContent = 'Comparison ready. Percentages are access-history demand forecasts.';
+  } catch (error) { $('#planner-status').textContent = error.message; }
 };
 $('#run-inference').onclick = async () => {
   const button = $('#run-inference');
