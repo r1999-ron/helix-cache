@@ -1,0 +1,13 @@
+{
+  "name": "helixcache",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Agentic hierarchical memory with simulated DNA archival storage",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "demo": "node src/demo.js",
+    "test": "node --test --test-isolation=none"
+  },
+  "engines": { "node": ">=20" }
+}
