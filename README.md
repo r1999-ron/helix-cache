@@ -61,8 +61,8 @@ The portfolio dashboard contains three hands-on experiments:
               ┌─────────────────┼──────────────────┐
               ▼                 ▼                  ▼
         GPU / RAM             SSD / S3         DNA archive
-                                              gzip + 2-bit codec
-                                              replicated strands
+                                              gzip + constrained ternary codec
+                                              Reed–Solomon + read copies
                                               SHA-256 verification
 ```
 
@@ -82,22 +82,25 @@ The archive pipeline is:
 Original file
     ↓ gzip
 Compressed bytes
-    ↓ 00=A, 01=C, 10=G, 11=T
-DNA bases
-    ↓ split into fragments and store three copies
+    ↓ split into systematic data shards + Reed–Solomon parity shards
+Self-describing packets (index, geometry, archive tag, CRC-32)
+    ↓ adaptive ternary mapping (balanced GC, no repeated adjacent base)
+Constrained DNA strands
+    ↓ optionally store multiple physical reads
 FASTA-like .dna archive
 ```
 
-Each archive includes codec metadata and the original SHA-256 checksum. During
-restoration, HelixCache performs majority voting across the three copies at
-each nucleotide position, decodes and decompresses the result, and rejects it
-if the checksum differs.
+Each strand carries its own index, Reed–Solomon geometry, archive tag, and
+CRC-32 inside the encoded bases. During restoration, HelixCache uses that
+checksum to repair a single substitution, insertion, or deletion in a read,
+discards unusable reads, and reconstructs missing data shards from parity.
+The restored file is finally verified with SHA-256.
 
 Example archive:
 
 ```text
 ;helixcache <encoded metadata>
->fragment_000000_copy_0
+>strand_000000_copy_0
 ACTTGAGTAAG...GAGTGTTC
 >fragment_000000_copy_1
 ACTTGAGTAAG...GAGTGTTC
@@ -258,17 +261,17 @@ data/                 Generated runtime tiers and registry (Git-ignored)
 | Gzip compression | Physical DNA synthesis and sequencing |
 | Binary-to-DNA conversion | Actual GPU and RAM allocation |
 | FASTA-like archive files | Cloud S3 infrastructure |
-| Substitution injection and repair | Production retrieval latency and cost |
+| Substitution/indel repair and missing-strand recovery | Production retrieval latency and cost |
 | SHA-256 verification | Model inference |
 | Real file upload and download | Multi-node orchestration |
 | Placement and prefetch decisions | Semantic LLM routing |
 
 ## Limitations
 
-- The basic two-bit codec can create long homopolymers and does not enforce GC
-  balance.
-- Triple replication is less efficient and powerful than production error-
-  correction codes.
+- The local read repair is intentionally bounded to one edit per physical read;
+  production sequencing pipelines would use alignment and probabilistic decoding.
+- Reed–Solomon recovery is limited to the configured parity-shard count and a
+  maximum of 255 data shards per archive.
 - Dependency prediction currently uses keyword overlap rather than semantic
   understanding.
 - Storage tiers are folders, not CUDA memory, Redis, NVMe, or a cloud provider.
@@ -280,10 +283,10 @@ data/                 Generated runtime tiers and registry (Git-ignored)
 
 ### Phase 2 — biologically aware DNA codec
 
-- Add Reed–Solomon or fountain-code error correction.
-- Control GC balance and maximum homopolymer length.
-- Handle insertions, deletions, and missing strands.
-- Embed strand indexes and checksums inside the encoded sequence.
+- [x] Add systematic Reed–Solomon error correction.
+- [x] Control GC balance and cap homopolymers at one base.
+- [x] Handle insertions, deletions, substitutions, and missing strands.
+- [x] Embed strand indexes and CRC-32 checksums inside each sequence.
 
 ### Phase 3 — real storage and inference
 
