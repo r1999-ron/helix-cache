@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: helix-cache
+    runtime: docker
+    plan: starter
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    maxShutdownDelaySeconds: 30
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATA_ROOT
+        value: /var/lib/helixcache
+    disk:
+      name: helixcache-data
+      mountPath: /var/lib/helixcache
+      sizeGB: 1

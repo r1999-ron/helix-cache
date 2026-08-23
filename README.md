@@ -170,6 +170,33 @@ The first run creates six sample artifacts. Runtime state is stored under
 `data/`, which is ignored by Git. Use **Reset demo** in the dashboard to return
 the samples to their original tiers.
 
+## Deploy the portfolio demo
+
+The repository includes a production Docker image and a Render Blueprint with
+an encrypted 1 GB persistent disk. The disk preserves uploaded artifacts, the
+registry, and generated DNA archives across restarts and deployments.
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/r1999-ron/helix-cache)
+
+Deployment steps:
+
+1. Open the button above and connect the GitHub repository.
+2. Review the `helix-cache` Blueprint service.
+3. Approve the Starter instance and 1 GB persistent disk, then deploy.
+4. Wait for `/health` to pass and open the generated `onrender.com` URL.
+
+The persistent disk requires a paid Render service. This is intentional: free
+instances use an ephemeral filesystem, which would erase uploaded artifacts and
+DNA archives after a restart. If persistence is not needed for a temporary demo,
+remove the `disk` block and change `plan` to `free` in `render.yaml`.
+
+The container honors these environment variables:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORT` | `3000` | HTTP listening port; hosting platforms can override it |
+| `DATA_ROOT` | `/var/lib/helixcache` | Persistent registry and tier storage root |
+
 ## Guided test
 
 1. Click **Reset demo** and confirm that two artifacts are in DNA.

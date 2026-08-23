@@ -1,0 +1,11 @@
+.git
+.gitignore
+data
+test
+tools
+qa-report
+.docx-temp
+HelixCache_Project_Report.docx
+README.md
+node_modules
+npm-debug.log

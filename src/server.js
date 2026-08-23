@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HelixCache } from './helix-cache.js';
 
-const cache = await new HelixCache().init();
+const cache = await new HelixCache(process.env.DATA_ROOT || undefined).init();
 const publicDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../public');
 
 async function seed(force = false) {
@@ -29,6 +29,7 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     if (req.method === 'GET' && url.pathname === '/') { res.writeHead(200, { 'content-type': 'text/html' }); return res.end(await readFile(path.join(publicDir, 'index.html'))); }
     if (req.method === 'GET' && url.pathname === '/app.js') { res.writeHead(200, { 'content-type': 'text/javascript' }); return res.end(await readFile(path.join(publicDir, 'app.js'))); }
+    if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { status: 'ok', artifacts: cache.list().length });
     if (req.method === 'GET' && url.pathname === '/api/state') return json(res, 200, { artifacts: cache.list().map((item) => ({ ...item, score: cache.score(item), recommendedTier: cache.recommendedTier(item) })), stats: cache.stats() });
     if (req.method === 'POST' && url.pathname === '/api/artifacts') return json(res, 201, await cache.register(await body(req)));
     if (req.method === 'POST' && url.pathname === '/api/optimize') return json(res, 200, { changes: await cache.optimize() });
@@ -53,3 +54,11 @@ const server = http.createServer(async (req, res) => {
 
 const port = Number(process.env.PORT || 3000);
 server.listen(port, () => console.log(`HelixCache is running at http://localhost:${port}`));
+
+const shutdown = (signal) => {
+  console.log(`${signal} received; closing HelixCache cleanly.`);
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(1), 10000).unref();
+};
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
