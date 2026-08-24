@@ -5,7 +5,10 @@
 [**Open the live HelixCache demo →**](https://helix-cache.onrender.com)
 
 [![Live Demo](https://img.shields.io/badge/live_demo-open_HelixCache-16846B?style=for-the-badge)](https://helix-cache.onrender.com)
-[![Tests](https://img.shields.io/badge/tests-5_passing-2E8B57?style=for-the-badge)](#guided-test)
+[![Tests](https://img.shields.io/badge/tests-12_passing-2E8B57?style=for-the-badge)](#guided-test)
+
+For the system design, component boundaries, rationale, trade-offs, deployment
+topology, and validated outcomes, see **[Architecture and design rationale](ARCHITECTURE.md)**.
 
 HelixCache predicts which AI artifacts will be needed, places them across GPU,
 RAM, SSD, object storage, and DNA tiers, and restores cold artifacts before
