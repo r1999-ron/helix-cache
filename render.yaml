@@ -2,14 +2,53 @@ services:
   - type: web
     name: helix-cache
     runtime: docker
-    plan: free
+    # PyTorch + Transformers need more memory than Render's 512 MB plans.
+    plan: standard
     region: singapore
-    dockerfilePath: ./Dockerfile
+    dockerfilePath: ./Dockerfile.phase3
     dockerContext: .
     healthCheckPath: /health
     autoDeployTrigger: commit
+    disk:
+      name: helixcache-data
+      mountPath: /var/lib/helixcache
+      sizeGB: 1
     envVars:
       - key: NODE_ENV
         value: production
       - key: DATA_ROOT
         value: /var/lib/helixcache
+      - key: PYTHON_BIN
+        value: python3
+      - key: LORA_BASE_MODEL
+        value: hf-internal-testing/tiny-random-gpt2
+      - key: HF_HOME
+        value: /var/lib/helixcache/huggingface
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: helix-cache-hot-cache
+          property: connectionString
+      # Populate these secrets during the first Blueprint sync. Leave all four
+      # blank to keep the filesystem fallback for the logical S3 tier.
+      - key: S3_ENDPOINT
+        sync: false
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_REGION
+        value: us-east-1
+      - key: S3_FORCE_PATH_STYLE
+        value: "true"
+      - key: S3_EGRESS_USD_PER_GB
+        value: "0.09"
+
+  - type: keyvalue
+    name: helix-cache-hot-cache
+    plan: free
+    region: singapore
+    ipAllowList: []
+    maxmemoryPolicy: allkeys-lru

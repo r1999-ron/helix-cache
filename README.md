@@ -202,25 +202,32 @@ The first run creates six sample artifacts. Runtime state is stored under
 `data/`, which is ignored by Git. Use **Reset demo** in the dashboard to return
 the samples to their original tiers.
 
-## Deploy the portfolio demo
+## Deploy the complete Render demo
 
-The repository includes a production Docker image and a free Render Blueprint.
-It is designed as a public portfolio demonstration with no hosting charge.
+The Render Blueprint deploys the complete Phase 3/4 runtime: Node.js, Python,
+PyTorch, Transformers, PEFT LoRA inference, a persistent SSD disk, and a managed
+Redis-compatible hot cache. It uses Render's Standard web-service plan because
+the 512 MB Free and Starter plans are too small for a reliable PyTorch runtime.
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/r1999-ron/helix-cache)
 
 Deployment steps:
 
 1. Open the button above and connect the GitHub repository.
-2. Review the `helix-cache` Blueprint service.
-3. Confirm the Free instance, then deploy.
-4. Wait for `/health` to pass and open the generated `onrender.com` URL.
+2. Review the `helix-cache` Standard web service, 1 GB persistent disk, and the
+   `helix-cache-hot-cache` Key Value service. These resources can incur charges.
+3. Enter the four requested S3 secrets, or leave all four blank to use the
+   persistent filesystem fallback for the logical S3 tier.
+4. Apply the Blueprint and wait for the larger Python image to build.
+5. Wait for `/health` to pass and open the generated `onrender.com` URL.
+6. Run the LoRA inference panel once. The first request downloads the tiny base
+   model into the persistent disk and can therefore take longer.
 
-Free Render instances use an ephemeral filesystem. Uploaded artifacts, generated
-DNA archives, and tier changes can reset after a restart or deployment. When that
-happens, HelixCache automatically recreates its six sample artifacts, so the
-portfolio experiments remain usable. Persistent user data can be added later by
-moving artifacts to object storage and the registry to a database.
+Uploaded artifacts, SQLite metadata, model downloads, generated DNA archives,
+and filesystem storage tiers persist under `/var/lib/helixcache`. Render disks
+are attached to one service instance, which matches HelixCache's single-writer
+SQLite design. Configure external S3-compatible storage for durable object
+storage that is independent of the Render instance.
 
 The container honors these environment variables:
 
@@ -236,6 +243,11 @@ The container honors these environment variables:
 | `PYTHON_BIN` | `python3` | Python executable for inference |
 | `LORA_BASE_MODEL` | `hf-internal-testing/tiny-random-gpt2` | Small base model |
 | `LORA_ADAPTER` | unset | Local path or Hugging Face PEFT adapter ID |
+
+`REDIS_URL` is populated automatically from the Blueprint's Key Value service.
+Add `LORA_ADAPTER` in the Render dashboard to use a trained adapter compatible
+with `LORA_BASE_MODEL`; otherwise the demo creates and reloads a genuine but
+randomly initialized PEFT LoRA adapter.
 
 ## Guided test
 

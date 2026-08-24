@@ -1,5 +1,5 @@
 FROM node:24-bookworm-slim
-ENV NODE_ENV=production PORT=3000 DATA_ROOT=/var/lib/helixcache PYTHON_BIN=python3 PIP_NO_CACHE_DIR=1
+ENV NODE_ENV=production PORT=3000 DATA_ROOT=/var/lib/helixcache PYTHON_BIN=python3 PIP_NO_CACHE_DIR=1 HF_HOME=/var/lib/helixcache/huggingface
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip && rm -rf /var/lib/apt/lists/*
 COPY requirements-inference.txt ./
@@ -10,4 +10,6 @@ COPY public ./public
 RUN mkdir -p /var/lib/helixcache && chown -R node:node /app /var/lib/helixcache
 USER node
 EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD python3 -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('PORT', '3000') + '/health', timeout=3)" || exit 1
 CMD ["node", "src/server.js"]
